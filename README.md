@@ -64,3 +64,7 @@ Informes, imágenes y verificaciones se guardan en `work/`.
   inglés), hereda su mismo delay.
 - Saltos de menos de 150 ms en el primer/último minuto (avances, intros) se ignoran
   para no recodificar una pista por algo imperceptible.
+
+## Licencia
+
+MIT, ver [LICENSE](LICENSE).
