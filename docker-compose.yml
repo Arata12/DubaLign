@@ -1,0 +1,17 @@
+name: dubalign
+
+# Interfaz web para revisar y corregir la sincronía de audios y subtítulos.
+#   docker compose up -d --build     -> http://localhost:7341
+#   docker compose down
+# Puerto y carpetas se cambian en .env (ver .env.example).
+services:
+  web:
+    build: .
+    user: "${PUID:-1000}:${PGID:-1000}"       # los archivos de output/ quedan a tu nombre
+    ports:
+      - "127.0.0.1:${PORT:-7341}:7341"        # solo accesible desde esta máquina
+    volumes:
+      - "${MEDIA_DIR:-./media}:/media:ro"     # originales, solo lectura
+      - "${OUTPUT_DIR:-./output}:/output"     # corregidos
+      - "./work:/work"                        # informes y temporales
+    restart: unless-stopped

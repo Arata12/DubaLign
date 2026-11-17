@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dubalign</title>
+<style>
+  :root { --bg:#f6f6f4; --panel:#fff; --fg:#1c1c1a; --mut:#6b6b66; --line:#dcdcd6; --acc:#2f6fde;
+          --ok:#1f8a4c; --bad:#c2410c; --warn:#a16207; --unk:#6b6b66; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --panel:#20201e; --fg:#ecece8; --mut:#9a9a93; --line:#35352f; --acc:#6ea0ff;
+            --ok:#4ade80; --bad:#fb923c; --warn:#facc15; --unk:#9a9a93; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  .app { display:grid; grid-template-columns: 320px 1fr; min-height:100vh; }
+  aside { border-right:1px solid var(--line); background:var(--panel); padding:14px; overflow:auto; max-height:100vh; position:sticky; top:0; }
+  main { padding:18px 22px 60px; min-width:0; }
+  h1 { font-size:16px; margin:0 0 10px; } h2 { font-size:15px; margin:26px 0 8px; }
+  button, select, input { font:inherit; color:inherit; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:5px 9px; }
+  button { cursor:pointer; } button:hover { border-color:var(--acc); }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600; }
+  button.on { border-color:var(--acc); color:var(--acc); font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  input[type=number] { width:92px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .file { padding:7px 8px; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; gap:8px; align-items:center; }
+  .file:hover { background:var(--bg); } .file.sel { outline:2px solid var(--acc); }
+  .file span.n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .badge { font-size:11px; padding:1px 7px; border-radius:99px; border:1px solid currentColor; white-space:nowrap; }
+  .ok { color:var(--ok); } .offset,.cuts,.tempo { color:var(--bad); } .unknown,.none { color:var(--unk); } .ref { color:var(--mut); } .fixed { color:var(--acc); }
+  table { border-collapse:collapse; width:100%; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { font-size:12px; color:var(--mut); font-weight:600; } tr:last-child td { border-bottom:0; }
+  td.num, .num { font-variant-numeric: tabular-nums; white-space:nowrap; }
+  .mut { color:var(--mut); } .small { font-size:12px; }
+  .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; margin-top:6px; }
+  .bar > i { display:block; height:100%; background:var(--acc); }
+  img.spec { width:100%; border:1px solid var(--line); border-radius:8px; background:#fff; min-height:120px; }
+  .err { color:var(--bad); } .hint { color:var(--mut); font-size:12px; margin:4px 0 8px; }
+  #viewer { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-top:22px; }
+  #viewer h2 { margin-top:0; }
+  #tlMap { width:100%; height:150px; display:block; margin-top:8px; cursor:pointer; border-radius:6px; }
+  #tlMain { width:100%; display:block; margin-top:8px; cursor:grab; border-radius:6px; touch-action:none; }
+  #tlMain.drag { cursor:grabbing; }
+  .sep { color:var(--line); }
+  @media (max-width: 900px) { .app { grid-template-columns:1fr; } aside { position:static; max-height:none; border-right:0; border-bottom:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1>dubalign</h1>
+    <div class="row">
+      <button id="btnAll" class="primary">Analizar todo</button>
+      <button id="btnRe" title="Vuelve a analizar el episodio seleccionado">Re-analizar</button>
+    </div>
+    <div id="jobs" class="small mut" style="margin:10px 0"></div>
+    <div id="files"></div>
+  </aside>
+  <main>
+    <div id="top"><p class="mut">Pon los originales en la carpeta <code>media/</code> y elige un episodio de la lista.</p></div>
+
+    <section id="viewer" hidden>
+      <h2>Episodio completo</h2>
+      <p class="hint">Arrastra para moverte · rueda para acercar/alejar · clic para poner el cursor · espacio: reproducir/pausa · ←/→: 2 s.
+        En el mapa de sincronía cada punto es una medición (cada 2 s); los huecos son tramos que no se pueden medir (solo diálogo o silencio).</p>
+      <div class="row">
+        Ver <button data-src="media">Original</button><button data-src="output">Archivo guardado</button>
+        <span class="sep">|</span>
+        Escuchar <select id="tlTrack"></select>
+        <select id="tlMode"><option value="split">japonés izq. · pista der.</option><option value="solo">solo la pista</option></select>
+        <button id="tlPlay" class="primary" style="min-width:44px">▶</button>
+        <span id="tlTime" class="num">0:00.0</span>
+        <span class="sep">|</span>
+        <button id="tlOut" title="Alejar">−</button><button id="tlIn" title="Acercar">+</button><button id="tlFit">Todo</button>
+        <span id="tlStatus" class="small mut"></span>
+      </div>
+      <canvas id="tlMap"></canvas>
+      <canvas id="tlMain"></canvas>
+      <audio id="tlAudio" preload="auto"></audio>
+    </section>
+
+    <div id="bottom"></div>
+  </main>
+</div>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const LABEL = { ok: "bien", offset: "desfasado", cuts: "cortes", tempo: "velocidad distinta", unknown: "no medible", ref: "referencia", fixed: "corregido" };
+const COLORS = ["#4c8dff", "#ff7a2f", "#36b35a", "#e64980", "#9775fa", "#22b8cf"];
+const S = { files: [], jobs: [], cur: null, data: null, plan: null, start: 0, dur: 4, view: "orig", doneSeen: new Set() };
+
+const api = async (url, body) => {
+  const r = await fetch(url, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : undefined);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+};
+const badge = st => `<span class="badge ${st || "none"}">${st ? LABEL[st] : "sin analizar"}</span>`;
+const ms = v => v == null ? "—" : (v > 0 ? "+" : "") + v + " ms";
+const fmt = (t, dec = 1) => { t = Math.max(0, t); const m = Math.floor(t / 60); const s = t - m * 60; return `${m}:${s.toFixed(dec).padStart(dec ? 3 + dec : 2, "0")}`; };
+
+// ------------------------------------------------------------------ lista y trabajos
+function renderFiles() {
+  $("#files").innerHTML = S.files.map(f => `
+    <div class="file ${f.path === S.cur ? "sel" : ""}" data-p="${esc(f.path)}" title="${esc(f.path)}">
+      <span class="n">${esc(f.path.replace(/\.[^.]+$/, ""))}</span>
+      <span>${f.saved ? badge("fixed") : badge(f.status)}</span>
+    </div>`).join("") || `<p class="mut">No hay videos en <code>media/</code>.</p>`;
+  const act = S.jobs.filter(j => j.state === "running" || j.state === "queued");
+  const run = act.find(j => j.state === "running");
+  const errs = S.jobs.filter(j => j.state === "error").slice(-2);
+  $("#jobs").innerHTML =
+    (run ? `${run.kind === "save" ? "Guardando" : "Analizando"}: ${esc(run.file)}<br>${esc(run.msg)}<div class="bar"><i style="width:${Math.round(run.progress * 100)}%"></i></div>` : "") +
+    (act.length > 1 ? `<div>${act.length - 1} en cola</div>` : "") +
+    errs.map(j => `<div class="err">Error en ${esc(j.file)}: ${esc(j.error)}</div>`).join("");
+}
+
+async function poll() {
+  try {
+    const st = await api("/api/state");
+    S.files = st.files; S.jobs = st.jobs;
+    renderFiles();
+    for (const j of st.jobs) {
+      if (j.state === "done" && !S.doneSeen.has(j.id)) {
+        S.doneSeen.add(j.id);
+        if (j.file === S.cur && S.ready) loadFile(S.cur, j.kind === "save");
+      }
+    }
+    if (!S.ready && location.hash.length > 1) {
+      const m = location.hash.slice(1).match(/^(.*?)(?:@([\d.]+)(?:\+([\d.]+))?(:o)?)?$/);
+      if (m[2]) S.goto = { t: +m[2], span: m[3] ? +m[3] : 30, orig: !!m[4] };
+      loadFile(decodeURIComponent(m[1]));
+    }
+    S.ready = true;
+  } catch (e) { $("#jobs").innerHTML = `<span class="err">Sin conexión con el servidor</span>`; }
+}
+
+async function loadFile(path, afterSave) {
+  const changed = path !== S.cur;
+  S.cur = path; renderFiles();
+  history.replaceState(null, "", "#" + encodeURIComponent(path));
+  try {
+    S.data = await api("/api/report?file=" + encodeURIComponent(path));
+  } catch (e) {
+    S.data = null;
+    $("#viewer").hidden = true; tlStop();
+    $("#bottom").innerHTML = "";
+    $("#top").innerHTML = `<h1>${esc(path)}</h1><p class="mut">Este episodio aún no está analizado.</p><button class="primary" id="an1">Analizar</button>`;
+    $("#an1").onclick = () => api("/api/analyze", { files: [path] }).then(poll);
+    return;
+  }
+  S.plan = JSON.parse(JSON.stringify(S.data.saved && !afterSave ? S.data.saved.plan : S.data.proposed));
+  if (!afterSave) { S.start = S.data.report.suggest_start; S.view = "orig"; } else S.view = "saved";
+  renderMain();
+  tlOpen(changed, afterSave ? "output" : S.goto && S.goto.orig ? "media" : (changed && S.data.saved ? "output" : V.src));
+}
+
+// ------------------------------------------------------------------ tablas y detalle
+function audioRow(a) {
+  if (a.status === "ref") return `<tr><td>a:${a.n} ${esc(a.lang)} <span class="mut">${esc(a.name)}</span></td><td>${badge("ref")}</td><td class="num">—</td><td class="mut">no se toca</td><td></td></tr>`;
+  const p = S.plan.audio[a.n] || { mode: "none" };
+  const seg = a.segments.length ? `<div class="small mut">${a.segments.map(s => `desde ${fmt(s.start)}: ${ms(Math.round(s.delay * 1000))}`).join(" · ")}</div>` : "";
+  const opts = [["none", "no tocar"], ["delay", "retraso fijo"]]
+    .concat(a.segments.length ? [["segments", "por tramos (recodifica)"]] : [])
+    .concat(a.status === "tempo" ? [["tempo", "velocidad (recodifica)"]] : []);
+  return `<tr><td>a:${a.n} ${esc(a.lang)} <span class="mut">${esc(a.name)}</span></td><td>${badge(a.status)}</td>
+    <td class="num">${ms(a.delay_ms)}${a.status === "tempo" ? ` · x${a.tempo}` : ""}${seg}<div class="small mut">${(a.dense || a.points).length} mediciones</div>${a.reason ? `<div class="small err">${esc(a.reason)}</div>` : ""}</td>
+    <td><div class="row"><select data-a="${a.n}" data-k="mode">${opts.map(([v, t]) => `<option value="${v}" ${p.mode === v ? "selected" : ""}>${t}</option>`).join("")}</select>
+      ${p.mode === "delay" || p.mode === "tempo" ? `<input type="number" step="1" data-a="${a.n}" data-k="delay_ms" value="${p.delay_ms ?? 0}"> ms` : ""}
+      ${p.mode === "segments" || p.mode === "tempo" ? `<select data-a="${a.n}" data-k="codec"><option value="aac" ${p.codec !== "flac" ? "selected" : ""}>AAC</option><option value="flac" ${p.codec === "flac" ? "selected" : ""}>FLAC</option></select>` : ""}</div></td>
+    <td><div class="row"><button data-clip="${a.n}" data-v="orig">▶ original</button><button data-clip="${a.n}" data-v="sim">▶ simulado</button></div></td></tr>`;
+}
+
+function subRow(s) {
+  const p = S.plan.subs[s.n] || {};
+  return `<tr><td>s:${s.n} ${esc(s.lang)} <span class="mut">${esc(s.name)}</span></td><td>${badge(s.status)}</td>
+    <td class="num">${ms(s.offset_ms)} <span class="small mut">corr. ${s.conf}</span></td>
+    <td><input type="number" step="10" data-s="${s.n}" value="${p.delay_ms ?? 0}"> ms</td></tr>`;
+}
+
+function verifyTable(v) {
+  return `<table><tr><th>Pista</th><th>Estado</th><th>Medido en el archivo guardado</th></tr>` +
+    v.audio.map(a => `<tr><td>a:${a.n} ${esc(a.lang)}</td><td>${badge(a.status)}</td><td class="num">${a.status === "ref" ? "—" : ms(a.delay_ms)}</td></tr>`).join("") +
+    v.subs.map(s => `<tr><td>s:${s.n} ${esc(s.lang)} <span class="mut">${esc(s.name)}</span></td><td>${badge(s.status)}</td><td class="num">${ms(s.offset_ms)}</td></tr>`).join("") + `</table>`;
+}
+
+const planEmpty = () => !Object.values(S.plan.audio).some(p => p.mode && p.mode !== "none" && !(p.mode === "delay" && !+p.delay_ms)) &&
+                        !Object.values(S.plan.subs).some(p => +p.delay_ms);
+
+function renderMain() {
+  const r = S.data.report, sv = S.data.saved, empty = planEmpty();
+  $("#top").innerHTML = `
+    <h1>${esc(S.cur)} &nbsp;${badge(r.status)} ${sv ? badge("fixed") : ""}</h1>
+    <h2>Audio</h2>
+    <table><tr><th>Pista</th><th>Estado</th><th>Desfase medido</th><th>Corrección a aplicar</th><th>10 s desde el cursor (izq. japonés, der. pista)</th></tr>${r.audio.map(audioRow).join("")}</table>
+    <audio id="player" controls style="width:100%;margin-top:8px;display:none"></audio>
+    ${r.subs.length ? `<h2>Subtítulos</h2>
+    <p class="hint">Se miden contra los momentos con voz. Entre 0 y +250 ms es normal: los subtítulos suelen entrar un poco antes de la voz.</p>
+    <table><tr><th>Pista</th><th>Estado</th><th>Desfase medido</th><th>Corrección a aplicar</th></tr>${r.subs.map(subRow).join("")}</table>` : ""}`;
+  $("#bottom").innerHTML = `
+    <h2>Detalle en imagen (permite simular la corrección antes de guardar)</h2>
+    <div class="row">
+      <button data-view="orig" class="${S.view === "orig" ? "on" : ""}">Original</button>
+      <button data-view="sim" class="${S.view === "sim" ? "on" : ""}" ${empty ? "disabled" : ""}>Con la corrección (simulado)</button>
+      <button data-view="saved" class="${S.view === "saved" ? "on" : ""}" ${sv ? "" : "disabled"}>Archivo guardado</button>
+      <span class="sep">|</span>
+      inicio <input type="number" id="start" step="0.5" min="0" value="${S.start}"> s
+      <select id="dur">${[4, 15, 60].map(d => `<option value="${d}" ${S.dur === d ? "selected" : ""}>${d} s</option>`).join("")}</select>
+      <button id="prev">◀</button><button id="next">▶</button>
+      <button id="fromCursor">Ir al cursor del visor</button>
+    </div>
+    <img class="spec" id="spec" alt="espectrograma" style="margin-top:8px">
+    <h2>Guardar</h2>
+    <div class="row">
+      <button id="save" class="primary" ${empty ? "disabled" : ""}>Guardar archivo corregido en output/</button>
+      <button id="reset">Volver a la propuesta automática</button>
+      <span class="mut small">${empty ? "No hay ninguna corrección seleccionada." : "El original no se modifica; al terminar se vuelve a medir el archivo guardado."}</span>
+    </div>
+    ${sv ? `<h2>Verificación del archivo guardado</h2>${verifyTable(sv.verify)}` : ""}`;
+  loadSpec(); bind();
+}
+
+const planQuery = () => "&plan=" + encodeURIComponent(JSON.stringify(S.plan));
+function loadSpec() {
+  const img = $("#spec");
+  img.style.opacity = .4;
+  img.onload = img.onerror = () => img.style.opacity = 1;
+  img.src = `/api/spectrogram?file=${encodeURIComponent(S.cur)}&start=${S.start}&dur=${S.dur}` +
+            (S.view === "saved" ? "&src=output" : S.view === "sim" ? planQuery() : "");
+}
+
+function bind() {
+  document.querySelectorAll("[data-a]").forEach(el => el.onchange = () => {
+    const n = el.dataset.a, a = S.data.report.audio.find(t => t.n == n), p = S.plan.audio[n] || (S.plan.audio[n] = { mode: "none" });
+    if (el.dataset.k === "mode") {
+      p.mode = el.value;
+      if (p.mode === "delay" && p.delay_ms == null) p.delay_ms = a.delay_ms || 0;
+      if (p.mode === "segments") { p.segments = a.segments; p.codec = p.codec || "aac"; }
+      if (p.mode === "tempo") { p.tempo = a.tempo; p.delay_ms = a.delay_ms || 0; p.codec = p.codec || "aac"; }
+    } else p[el.dataset.k] = el.dataset.k === "delay_ms" ? +el.value : el.value;
+    if (S.view === "orig") S.view = "sim";
+    renderMain();
+  });
+  document.querySelectorAll("[data-s]").forEach(el => el.onchange = () => { S.plan.subs[el.dataset.s] = { delay_ms: +el.value }; if (S.view === "orig") S.view = "sim"; renderMain(); });
+  document.querySelectorAll("[data-view]").forEach(el => el.onclick = () => { S.view = el.dataset.view; renderMain(); });
+  document.querySelectorAll("[data-clip]").forEach(el => el.onclick = () => {
+    tlPause();
+    const pl = $("#player"); pl.style.display = "block";
+    pl.src = `/api/clip?file=${encodeURIComponent(S.cur)}&track=${el.dataset.clip}&start=${V.cursor.toFixed(2)}&dur=10` + (el.dataset.v === "sim" ? planQuery() : "");
+    pl.play();
+  });
+  $("#start").onchange = e => { S.start = Math.max(0, +e.target.value); renderMain(); };
+  $("#dur").onchange = e => { S.dur = +e.target.value; renderMain(); };
+  $("#prev").onclick = () => { S.start = Math.max(0, +(S.start - S.dur / 2).toFixed(2)); renderMain(); };
+  $("#next").onclick = () => { S.start = +(S.start + S.dur / 2).toFixed(2); renderMain(); };
+  $("#fromCursor").onclick = () => { S.start = Math.max(0, +(V.cursor - S.dur * 0.25).toFixed(2)); renderMain(); };
+  $("#reset").onclick = () => { S.plan = JSON.parse(JSON.stringify(S.data.proposed)); renderMain(); };
+  $("#save").onclick = async e => {
+    e.target.disabled = true; e.target.textContent = "Guardando…";
+    try { await api("/api/save", { file: S.cur, plan: S.plan }); poll(); }
+    catch (err) { alert("No se pudo guardar: " + err.message); renderMain(); }
+  };
+}
+
+// ------------------------------------------------------------------ visor del episodio completo
+const V = { src: "media", meta: null, env: [], t0: 0, pps: 1, cursor: 0, tiles: new Map(), track: 1, mode: "split", raf: 0, want: false, loadingMeta: false };
+const audioEl = $("#tlAudio"), mapCv = $("#tlMap"), mainCv = $("#tlMain");
+const LANE = 54, GAP = 4, ENV_H = 110, SUB_H = 11, AXIS = 22;
+
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const viewW = () => mainCv.clientWidth;
+const span = () => viewW() / V.pps;
+const dur = () => V.meta ? V.meta.duration : 1;
+function clampView() {
+  const minP = viewW() / dur(), maxP = 600;
+  V.pps = Math.min(maxP, Math.max(minP, V.pps));
+  V.t0 = Math.min(Math.max(0, V.t0), Math.max(0, dur() - span()));
+}
+function zoomAt(f, t) {
+  const x = (t - V.t0) * V.pps;
+  V.pps *= f; clampView();
+  V.t0 = t - x / V.pps; clampView(); draw();
+}
+const ready = () => V.meta && S.data;
+const refTrack = () => S.data.report.ref_track || 0;
+const srcReport = () => V.src === "output" && S.data.saved ? S.data.saved.verify : S.data.report;
+
+async function tlOpen(newFile, src) {
+  $("#viewer").hidden = false;
+  V.src = src === "output" && S.data.saved ? "output" : "media";
+  if (newFile) { tlStop(); V.cursor = 0; V.meta = null; }
+  const sel = $("#tlTrack"), r = S.data.report, ref = refTrack();
+  const dubs = r.audio.filter(a => a.n !== ref);
+  if (newFile || !sel.options.length) {
+    sel.innerHTML = r.audio.map(a => `<option value="${a.n}">a:${a.n} ${esc(a.lang)} ${esc(a.name)}${a.n === ref ? " (referencia)" : ""}</option>`).join("");
+    const worst = dubs.find(a => a.status !== "ok") || dubs[0] || r.audio[0];
+    V.track = worst.n; sel.value = V.track;
+  }
+  await tlLoadMeta(newFile);
+}
+
+async function tlLoadMeta(fit) {
+  document.querySelectorAll("#viewer [data-src]").forEach(b => {
+    b.classList.toggle("on", b.dataset.src === V.src);
+    b.disabled = b.dataset.src === "output" && !S.data.saved;
+  });
+  status("preparando el visor (la primera vez tarda unos segundos)…");
+  const file = S.cur;
+  try {
+    const m = await api(`/api/timeline/meta?file=${encodeURIComponent(file)}&src=${V.src}`);
+    if (file !== S.cur) return;
+    V.meta = m;
+    V.env = m.env.tracks.map(b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0)));
+    if (fit) { V.pps = viewW() / dur(); V.t0 = 0; }
+    if (S.goto) { V.pps = viewW() / S.goto.span; V.cursor = S.goto.t; V.t0 = S.goto.t - S.goto.span * 0.25; S.goto = null; }
+    clampView(); status(""); tlSwitchAudio(); draw();
+  } catch (e) { status("Error preparando el visor: " + e.message, true); }
+}
+
+function status(t, err) { const s = $("#tlStatus"); s.textContent = t; s.classList.toggle("err", !!err); }
+
+// ---- audio
+function audioUrl() {
+  const solo = V.mode === "solo" || V.track === refTrack();
+  return `/api/timeline/audio?file=${encodeURIComponent(S.cur)}&src=${V.src}&track=${V.track}&mode=${solo ? "solo" : "split"}`;
+}
+function tlSwitchAudio() {
+  const url = audioUrl();
+  if (audioEl.dataset.url === url) return;
+  const playing = !audioEl.paused;
+  audioEl.pause();
+  audioEl.dataset.url = url;
+  audioEl.src = url;
+  audioEl.load();
+  if (playing || V.want) { V.want = true; status("preparando el audio del episodio (la primera vez ~30 s)…"); }
+}
+audioEl.addEventListener("loadedmetadata", () => {
+  audioEl.currentTime = V.cursor;
+  if (V.want) audioEl.play().catch(() => {});
+});
+audioEl.addEventListener("playing", () => { status(""); $("#tlPlay").textContent = "⏸"; loop(); });
+audioEl.addEventListener("pause", () => { $("#tlPlay").textContent = "▶"; });
+audioEl.addEventListener("waiting", () => status("cargando…"));
+audioEl.addEventListener("error", () => { if (audioEl.dataset.url) status("No se pudo cargar el audio", true); V.want = false; });
+function tlPlay() {
+  if (!ready()) return;
+  V.want = true;
+  if (audioEl.readyState >= 1) { audioEl.currentTime = V.cursor; audioEl.play().catch(() => {}); }
+  else status("preparando el audio del episodio (la primera vez ~30 s)…");
+}
+function tlPause() { V.want = false; audioEl.pause(); }
+function tlStop() { tlPause(); audioEl.removeAttribute("src"); delete audioEl.dataset.url; audioEl.load(); }
+function seek(t) {
+  V.cursor = Math.min(Math.max(0, t), dur());
+  history.replaceState(null, "", "#" + encodeURIComponent(S.cur) + "@" + V.cursor.toFixed(1) + "+" + Math.round(span()) + (V.src === "media" ? ":o" : ""));
+  if (audioEl.readyState >= 1) audioEl.currentTime = V.cursor;
+  draw();
+}
+function loop() {
+  cancelAnimationFrame(V.raf);
+  const step = () => {
+    if (audioEl.paused) { draw(); return; }
+    V.cursor = audioEl.currentTime;
+    const s = span();
+    if (V.cursor > V.t0 + s * 0.92 || V.cursor < V.t0) { V.t0 = V.cursor - s * 0.08; clampView(); }
+    draw();
+    V.raf = requestAnimationFrame(step);
+  };
+  V.raf = requestAnimationFrame(step);
+}
+
+// ---- dibujo
+let drawPending = false;
+function draw() { if (!drawPending) { drawPending = true; requestAnimationFrame(() => { drawPending = false; drawMap(); drawMain(); }); } }
+
+function setup(cv, h) {
+  const dpr = devicePixelRatio || 1, W = cv.clientWidth;
+  cv.style.height = h + "px";
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(h * dpr); }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, h);
+  return [g, W];
+}
+function niceStep(min) { for (const s of [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]) if (s >= min) return s; return 1200; }
+
+function drawMap() {
+  if (!ready()) return;
+  const H = 150, [g, W] = setup(mapCv, H), rep = srcReport(), ref = refTrack();
+  const L = 58, R = 8, T = 8, B = 18, D = dur();
+  g.fillStyle = css("--bg"); g.fillRect(0, 0, W, H);
+  const tracks = rep.audio.filter(a => a.n !== ref && a.dense);
+  const vals = tracks.flatMap(a => a.dense.filter(p => p[2] >= 12).map(p => p[1])).sort((a, b) => a - b);
+  let lo = -100, hi = 100;
+  if (vals.length) {
+    lo = vals[Math.floor(vals.length * 0.02)]; hi = vals[Math.ceil(vals.length * 0.98) - 1];
+    const pad = Math.max(40, (hi - lo) * 0.15); lo -= pad; hi += pad;
+    if (hi - lo < 200) { const c = (hi + lo) / 2; lo = c - 100; hi = c + 100; }
+  }
+  const x = t => L + (W - L - R) * t / D, y = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  g.font = "11px system-ui"; g.strokeStyle = css("--line"); g.fillStyle = css("--mut"); g.lineWidth = 1;
+  const st = niceStep((hi - lo) / 4);
+  for (let v = Math.ceil(lo / st) * st; v <= hi; v += st) { g.beginPath(); g.moveTo(L, y(v)); g.lineTo(W - R, y(v)); g.stroke(); g.fillText((v > 0 ? "+" : "") + Math.round(v) + " ms", 4, y(v) + 4); }
+  const ts = niceStep(D / ((W - L) / 70));
+  for (let t = 0; t <= D; t += ts) g.fillText(fmt(t, 0), x(t) - 12, H - 4);
+  // ventana visible
+  g.fillStyle = css("--acc"); g.globalAlpha = 0.12; g.fillRect(x(V.t0), T, Math.max(2, x(V.t0 + span()) - x(V.t0)), H - T - B); g.globalAlpha = 1;
+  tracks.forEach(a => {
+    g.fillStyle = COLORS[a.n % COLORS.length];
+    for (const p of a.dense) {
+      if (p[1] < lo || p[1] > hi) {  // fuera de escala: marca pequeña en el borde
+        g.globalAlpha = 0.25; g.fillRect(x(p[0]) - 1, p[1] < lo ? H - B - 3 : T, 2, 3); continue;
+      }
+      g.globalAlpha = Math.min(1, Math.max(0.12, (p[2] - 8) / 14));
+      g.beginPath(); g.arc(x(p[0]), y(p[1]), 2.4, 0, 7); g.fill();
+    }
+  });
+  g.globalAlpha = 1;
+  tracks.forEach((a, i) => { g.fillStyle = COLORS[a.n % COLORS.length]; g.fillText(`● a:${a.n} ${a.lang}`, L + 6 + i * 74, T + 11); });
+  g.fillStyle = css("--mut"); g.fillText(V.src === "output" ? "archivo guardado" : "original", W - R - 100, T + 11);
+  g.strokeStyle = css("--fg"); g.beginPath(); g.moveTo(x(V.cursor), T); g.lineTo(x(V.cursor), H - B); g.stroke();
+  mapCv._x = { L, R, W, D };
+}
+
+function level() {
+  const need = V.pps * (devicePixelRatio || 1), lv = V.meta.levels;
+  for (let i = lv.length - 1; i >= 0; i--) if (lv[i][0] >= need) return i;
+  return 0;
+}
+function tile(track, lvl, idx, request) {
+  const k = `${V.meta.key}|${track}|${lvl}|${idx}`;
+  let im = V.tiles.get(k);
+  if (!im && request) {
+    im = new Image(); im.decoding = "async";
+    im.onload = () => draw();
+    im.src = `/api/timeline/tile?file=${encodeURIComponent(S.cur)}&src=${V.src}&track=${track}&level=${lvl}&index=${idx}&k=${V.meta.key}`;
+    V.tiles.set(k, im);
+    if (V.tiles.size > 600) V.tiles.delete(V.tiles.keys().next().value);
+  }
+  return im && im.complete && im.naturalWidth ? im : null;
+}
+
+function drawMain() {
+  if (!ready()) return;
+  const rep = srcReport(), subs = rep.subs.filter(s => s.events && s.events.length), nA = V.meta.tracks.length;
+  const H = nA * (LANE + GAP) + ENV_H + GAP + subs.length * (SUB_H + 2) + (subs.length ? GAP : 0) + AXIS;
+  const [g, W] = setup(mainCv, H);
+  const t0 = V.t0, t1 = V.t0 + span(), X = t => (t - t0) * V.pps;
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, nA * (LANE + GAP));
+  // espectrogramas
+  const lv = level(), levels = V.meta.levels;
+  for (let n = 0; n < nA; n++) {
+    const y0 = n * (LANE + GAP);
+    for (let l = levels.length - 1; l >= lv; l--) {   // primero lo grueso que ya esté en caché, luego lo fino
+      const [fps, spn] = levels[l];
+      for (let i = Math.floor(t0 / spn); i * spn < t1; i++) {
+        const im = tile(n, l, i, l === lv);
+        if (im) g.drawImage(im, X(i * spn), y0, im.naturalWidth / fps * V.pps, LANE);
+      }
+    }
+    const label = V.meta.tracks[n];
+    g.font = "11px system-ui"; const tw = g.measureText(label).width;
+    g.fillStyle = "rgba(0,0,0,.6)"; g.fillRect(4, y0 + 3, tw + 10, 15);
+    g.fillStyle = COLORS[n % COLORS.length]; g.fillRect(4, y0 + 3, 3, 15);
+    g.fillStyle = "#fff"; g.fillText(label, 11, y0 + 14);
+  }
+  // envolventes superpuestas
+  const ey = nA * (LANE + GAP), fps = V.meta.env.fps, dbLo = -70;
+  g.fillStyle = css("--panel"); g.fillRect(0, ey, W, ENV_H);
+  g.strokeStyle = css("--line"); g.lineWidth = 1;
+  for (const db of [-60, -40, -20]) { const yy = ey + ENV_H * (-db / -dbLo); g.beginPath(); g.moveTo(0, yy); g.lineTo(W, yy); g.stroke(); }
+  V.env.forEach((e, n) => {
+    g.strokeStyle = COLORS[n % COLORS.length]; g.lineWidth = n === refTrack() ? 1.4 : 1; g.beginPath();
+    for (let x = 0; x < W; x++) {
+      const a = Math.floor((t0 + x / V.pps) * fps), b = Math.max(a + 1, Math.floor((t0 + (x + 1) / V.pps) * fps));
+      let m = 0; for (let k = a; k < b && k < e.length; k++) if (e[k] > m) m = e[k];
+      const db = m / 255 * 90 - 90, yy = ey + ENV_H * Math.min(1, Math.max(0, db / dbLo));
+      x ? g.lineTo(x, yy) : g.moveTo(x, yy);
+    }
+    g.stroke();
+  });
+  g.fillStyle = css("--mut"); g.font = "11px system-ui"; g.fillText("volumen de todas las pistas superpuesto (si están en sync, los golpes coinciden)", 6, ey + 12);
+  // subtítulos
+  let sy = ey + ENV_H + GAP;
+  subs.forEach((s, i) => {
+    g.fillStyle = COLORS[(i + 2) % COLORS.length]; g.globalAlpha = 0.85;
+    for (const [a, b] of s.events) if (b > t0 && a < t1) g.fillRect(X(a), sy, Math.max(1, (b - a) * V.pps), SUB_H);
+    g.globalAlpha = 1; g.font = "10px system-ui";
+    const lab = `s:${s.n} ${s.name || s.lang}`, lw = g.measureText(lab).width;
+    g.fillStyle = css("--panel"); g.fillRect(W - lw - 8, sy - 1, lw + 8, SUB_H + 2);
+    g.fillStyle = css("--mut"); g.fillText(lab, W - lw - 4, sy + 9);
+    sy += SUB_H + 2;
+  });
+  // eje de tiempo
+  const ay = H - AXIS + 4, st = niceStep(80 / V.pps);
+  g.fillStyle = css("--mut"); g.strokeStyle = css("--line"); g.font = "11px system-ui";
+  for (let t = Math.ceil(t0 / st) * st; t <= t1; t += st) {
+    const x = X(t); g.beginPath(); g.moveTo(x, 0); g.lineTo(x, ay); g.globalAlpha = 0.25; g.stroke(); g.globalAlpha = 1;
+    g.fillText(fmt(t, st < 1 ? 1 : 0), x + 2, ay + 12);
+  }
+  // cursor
+  const cx = X(V.cursor);
+  if (cx >= 0 && cx <= W) { g.strokeStyle = "#fff"; g.lineWidth = 1.5; g.beginPath(); g.moveTo(cx, 0); g.lineTo(cx, ay); g.stroke();
+    g.strokeStyle = css("--fg"); g.lineWidth = 1; g.beginPath(); g.moveTo(cx, nA * (LANE + GAP)); g.lineTo(cx, ay); g.stroke(); }
+  $("#tlTime").textContent = `${fmt(V.cursor)} / ${fmt(dur(), 0)}`;
+}
+
+// ---- interacción
+let drag = null;
+mainCv.addEventListener("pointerdown", e => { drag = { x: e.clientX, t0: V.t0, moved: false }; mainCv.setPointerCapture(e.pointerId); });
+mainCv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x;
+  if (Math.abs(dx) > 3) { drag.moved = true; mainCv.classList.add("drag"); }
+  if (drag.moved) { V.t0 = drag.t0 - dx / V.pps; clampView(); draw(); }
+});
+mainCv.addEventListener("pointerup", e => {
+  if (drag && !drag.moved) seek(V.t0 + e.offsetX / V.pps);
+  drag = null; mainCv.classList.remove("drag");
+});
+mainCv.addEventListener("wheel", e => {
+  if (!ready()) return;
+  e.preventDefault();
+  if (Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey) { V.t0 += (e.deltaX || e.deltaY) / V.pps; clampView(); draw(); }
+  else zoomAt(Math.exp(-e.deltaY * 0.0015), V.t0 + e.offsetX / V.pps);
+}, { passive: false });
+function mapToTime(e) { const m = mapCv._x; return m ? Math.min(m.D, Math.max(0, (e.offsetX - m.L) / (m.W - m.L - m.R) * m.D)) : 0; }
+let mapDrag = false;
+mapCv.addEventListener("pointerdown", e => { mapDrag = true; mapCv.setPointerCapture(e.pointerId); const t = mapToTime(e); V.t0 = t - span() / 2; clampView(); seek(t); });
+mapCv.addEventListener("pointermove", e => { if (mapDrag) { const t = mapToTime(e); V.t0 = t - span() / 2; clampView(); seek(t); } });
+mapCv.addEventListener("pointerup", () => mapDrag = false);
+$("#tlIn").onclick = () => zoomAt(2, V.cursor >= V.t0 && V.cursor <= V.t0 + span() ? V.cursor : V.t0 + span() / 2);
+$("#tlOut").onclick = () => zoomAt(0.5, V.t0 + span() / 2);
+$("#tlFit").onclick = () => { V.pps = viewW() / dur(); V.t0 = 0; clampView(); draw(); };
+$("#tlPlay").onclick = () => audioEl.paused ? tlPlay() : tlPause();
+$("#tlTrack").onchange = e => { V.track = +e.target.value; tlSwitchAudio(); };
+$("#tlMode").onchange = e => { V.mode = e.target.value; tlSwitchAudio(); };
+document.querySelectorAll("#viewer [data-src]").forEach(b => b.onclick = () => { if (V.src !== b.dataset.src) { V.src = b.dataset.src; tlLoadMeta(false); } });
+document.addEventListener("keydown", e => {
+  if ($("#viewer").hidden || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+  if (e.code === "Space") { e.preventDefault(); audioEl.paused ? tlPlay() : tlPause(); }
+  else if (e.code === "ArrowLeft") { e.preventDefault(); seek(V.cursor - 2); }
+  else if (e.code === "ArrowRight") { e.preventDefault(); seek(V.cursor + 2); }
+});
+addEventListener("resize", () => { if (ready()) { clampView(); draw(); } });
+
+$("#files").onclick = e => { const el = e.target.closest(".file"); if (el) loadFile(el.dataset.p); };
+$("#btnAll").onclick = () => api("/api/analyze", { files: S.files.map(f => f.path) }).then(poll);
+$("#btnRe").onclick = () => S.cur && api("/api/analyze", { files: [S.cur], force: true }).then(poll);
+poll(); setInterval(poll, 1500);
+</script>
+</body>
+</html>

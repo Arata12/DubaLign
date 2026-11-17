@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.env
+input/
+media/
+output/
+work/
+# nunca subir video/audio
+*.mkv
+*.mka
+*.mp4
+*.m4a
+*.flac
+*.wav

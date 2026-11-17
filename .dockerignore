@@ -1,0 +1,8 @@
+.venv
+media
+output
+work
+input
+__pycache__
+*.mkv
+.git
