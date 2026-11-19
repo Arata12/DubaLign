@@ -5,6 +5,7 @@ input/
 media/
 output/
 work/
+target/
 # nunca subir video/audio
 *.mkv
 *.mka

@@ -1,0 +1,47 @@
+[package]
+name = "dubalign"
+version = "0.2.0"
+edition = "2021"
+
+[[bin]]
+name = "dubalign-web"
+path = "src/bin/web.rs"
+
+[[bin]]
+name = "dubalign-fix"
+path = "src/bin/fix.rs"
+
+[[bin]]
+name = "dubalign-sync"
+path = "src/bin/sync.rs"
+
+[[bin]]
+name = "dubalign-spectro"
+path = "src/bin/spectro.rs"
+
+[dependencies]
+anyhow = "1.0"
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4.5", features = ["derive"] }
+fontdue = "0.9"
+libc = "0.2"
+memmap2 = "0.9"
+num-complex = "0.4"
+png = "0.17"
+rayon = "1.10"
+realfft = "3.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha1 = "0.10"
+tempfile = "3.14"
+tiny-skia = "0.11"
+tokio = { version = "1.43", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs"] }
+walkdir = "2.5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

@@ -36,7 +36,14 @@
   .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; margin-top:6px; }
   .bar > i { display:block; height:100%; background:var(--acc); }
   img.spec { width:100%; border:1px solid var(--line); border-radius:8px; background:#fff; min-height:120px; }
-  .err { color:var(--bad); } .hint { color:var(--mut); font-size:12px; margin:4px 0 8px; }
+  .err { color:var(--bad); } .warn { color:var(--warn); } .hint { color:var(--mut); font-size:12px; margin:4px 0 8px; }
+  .folder { border:1px solid var(--line); border-radius:8px; margin-bottom:10px; overflow:hidden; }
+  .fhead { display:flex; justify-content:space-between; align-items:center; gap:6px; padding:7px 8px; background:var(--bg); border-bottom:1px solid var(--line); cursor:pointer; }
+  .fhead.col { border-bottom:0; }
+  .fname { font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .factions { display:flex; gap:4px; flex-shrink:0; }
+  button.mini { font-size:11px; padding:2px 7px; border-radius:5px; }
+  .fbody { padding:4px; }
   #viewer { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-top:22px; }
   #viewer h2 { margin-top:0; }
   #tlMap { width:100%; height:150px; display:block; margin-top:8px; cursor:pointer; border-radius:6px; }
@@ -52,6 +59,7 @@
     <h1>dubalign</h1>
     <div class="row">
       <button id="btnAll" class="primary">Analizar todo</button>
+      <button id="btnProcAll" title="Analiza y guarda en output/ los episodios pendientes (o re-procesa si todos ya estaban guardados)">Procesar todo</button>
       <button id="btnRe" title="Vuelve a analizar el episodio seleccionado">Re-analizar</button>
     </div>
     <div id="jobs" class="small mut" style="margin:10px 0"></div>
@@ -88,7 +96,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const LABEL = { ok: "bien", offset: "desfasado", cuts: "cortes", tempo: "velocidad distinta", unknown: "no medible", ref: "referencia", fixed: "corregido" };
 const COLORS = ["#4c8dff", "#ff7a2f", "#36b35a", "#e64980", "#9775fa", "#22b8cf"];
-const S = { files: [], jobs: [], cur: null, data: null, plan: null, start: 0, dur: 4, view: "orig", doneSeen: new Set() };
+const S = { files: [], jobs: [], cur: null, data: null, plan: null, start: 0, dur: 4, view: "orig", doneSeen: new Set(), collapsed: new Set() };
 
 const api = async (url, body) => {
   const r = await fetch(url, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : undefined);
@@ -101,16 +109,43 @@ const fmt = (t, dec = 1) => { t = Math.max(0, t); const m = Math.floor(t / 60); 
 
 // ------------------------------------------------------------------ lista y trabajos
 function renderFiles() {
-  $("#files").innerHTML = S.files.map(f => `
-    <div class="file ${f.path === S.cur ? "sel" : ""}" data-p="${esc(f.path)}" title="${esc(f.path)}">
-      <span class="n">${esc(f.path.replace(/\.[^.]+$/, ""))}</span>
-      <span>${f.saved ? badge("fixed") : badge(f.status)}</span>
-    </div>`).join("") || `<p class="mut">No hay videos en <code>media/</code>.</p>`;
+  const groups = new Map();
+  for (const f of S.files) {
+    const fld = f.folder ?? "";
+    if (!groups.has(fld)) groups.set(fld, []);
+    groups.get(fld).push(f);
+  }
+  const html = [];
+  for (const [fld, list] of groups) {
+    const col = S.collapsed.has(fld);
+    const label = fld ? `📁 ${esc(fld)}` : "📁 (raíz)";
+    const pending = list.filter(f => !f.status).length;
+    const issues = list.filter(f => f.status && f.status !== "ok" && !f.saved).length;
+    const info = pending ? `${pending} sin analizar` : issues ? `${issues} por corregir` : "al día";
+    html.push(`<div class="folder">
+      <div class="fhead ${col ? "col" : ""}" data-ftog="${esc(fld)}">
+        <span class="fname" title="${esc(fld || "(raíz)")} — ${info}">${label} <span class="mut small">(${list.length})</span></span>
+        <span class="factions">
+          <button class="mini" data-fanalyze="${esc(fld)}" title="Analizar archivos de esta carpeta">Analizar</button>
+          <button class="mini primary" data-fproc="${esc(fld)}" title="Analizar y guardar en output/ los archivos que requieran corrección">Procesar</button>
+        </span>
+      </div>
+      ${col ? "" : `<div class="fbody">` + list.map(f => {
+        const displayName = (f.name || f.path).replace(/\.[^.]+$/, "");
+        return `<div class="file ${f.path === S.cur ? "sel" : ""}" data-p="${esc(f.path)}" title="${esc(f.path)}">
+          <span class="n">${esc(displayName)}</span>
+          <span>${f.saved ? badge("fixed") : badge(f.status)}</span>
+        </div>`;
+      }).join("") + `</div>`}
+    </div>`);
+  }
+  $("#files").innerHTML = html.join("") || `<p class="mut">No hay videos en <code>media/</code>.</p>`;
   const act = S.jobs.filter(j => j.state === "running" || j.state === "queued");
   const run = act.find(j => j.state === "running");
   const errs = S.jobs.filter(j => j.state === "error").slice(-2);
+  const kindLabel = run ? (run.kind === "save" ? "Guardando" : run.kind === "process" ? "Procesando" : "Analizando") : "";
   $("#jobs").innerHTML =
-    (run ? `${run.kind === "save" ? "Guardando" : "Analizando"}: ${esc(run.file)}<br>${esc(run.msg)}<div class="bar"><i style="width:${Math.round(run.progress * 100)}%"></i></div>` : "") +
+    (run ? `${kindLabel}: ${esc(run.file)}<br>${esc(run.msg)}<div class="bar"><i style="width:${Math.round(run.progress * 100)}%"></i></div>` : "") +
     (act.length > 1 ? `<div>${act.length - 1} en cola</div>` : "") +
     errs.map(j => `<div class="err">Error en ${esc(j.file)}: ${esc(j.error)}</div>`).join("");
 }
@@ -123,7 +158,7 @@ async function poll() {
     for (const j of st.jobs) {
       if (j.state === "done" && !S.doneSeen.has(j.id)) {
         S.doneSeen.add(j.id);
-        if (j.file === S.cur && S.ready) loadFile(S.cur, j.kind === "save");
+        if (j.file === S.cur && S.ready) loadFile(S.cur, j.kind === "save" || j.kind === "process");
       }
     }
     if (!S.ready && location.hash.length > 1) {
@@ -146,7 +181,7 @@ async function loadFile(path, afterSave) {
     $("#viewer").hidden = true; tlStop();
     $("#bottom").innerHTML = "";
     $("#top").innerHTML = `<h1>${esc(path)}</h1><p class="mut">Este episodio aún no está analizado.</p><button class="primary" id="an1">Analizar</button>`;
-    $("#an1").onclick = () => api("/api/analyze", { files: [path] }).then(poll);
+    $("#an1").onclick = () => api("/api/analyze", { files: [path], force: true }).then(poll);
     return;
   }
   S.plan = JSON.parse(JSON.stringify(S.data.saved && !afterSave ? S.data.saved.plan : S.data.proposed));
@@ -157,35 +192,96 @@ async function loadFile(path, afterSave) {
 
 // ------------------------------------------------------------------ tablas y detalle
 function audioRow(a) {
-  if (a.status === "ref") return `<tr><td>a:${a.n} ${esc(a.lang)} <span class="mut">${esc(a.name)}</span></td><td>${badge("ref")}</td><td class="num">—</td><td class="mut">no se toca</td><td></td></tr>`;
+  if (a.status === "ref") {
+    const vf = a.ref_fps || S.data.report.video_fps;
+    const fpsRef = vf ? ` · ${vf} fps` : "";
+    const dur = a.duration_s != null ? `<div class="small mut">duración ${fmt(a.duration_s, 1)}${fpsRef}</div>` : (vf ? `<div class="small mut">${vf} fps</div>` : "");
+    return `<tr><td>a:${a.n} ${esc(a.lang)} <span class="mut">${esc(a.name)}</span></td><td>${badge("ref")}</td><td class="num">—${dur}</td><td class="mut">no se toca</td><td></td></tr>`;
+  }
   const p = S.plan.audio[a.n] || { mode: "none" };
+  const refA = S.data.report.audio.find(t => t.n === (S.data.report.ref_track || 0));
+  const delaySec = (p.mode === "delay" || p.mode === "tempo") ? (p.delay_ms || 0) / 1000 : 0;
+  const effDur = (a.duration_s != null && p.mode === "tempo" && p.tempo) ? (a.duration_s / p.tempo) : a.duration_s;
+  const extraDur = (refA && refA.duration_s && effDur != null && (effDur + delaySec) > refA.duration_s + 0.25) ? (effDur + delaySec - refA.duration_s) : 0;
+  const durHint = extraDur
+    ? `<div class="small warn">duración ${fmt(a.duration_s, 1)} (+${extraDur.toFixed(1)} s → recorte -t a ${fmt(refA.duration_s, 1)})</div>`
+    : (a.duration_s != null ? `<div class="small mut">duración ${fmt(a.duration_s, 1)}</div>` : "");
   const seg = a.segments.length ? `<div class="small mut">${a.segments.map(s => `desde ${fmt(s.start)}: ${ms(Math.round(s.delay * 1000))}`).join(" · ")}</div>` : "";
+  let tempoInfo = "";
+  if (a.status === "tempo") {
+    const vf = S.data.report.video_fps;
+    const driftMs = a.duration_s ? Math.round(a.duration_s * (1 / a.tempo - 1) * 1000) : null;
+    const driftTxt = driftMs != null ? ` (${driftMs > 0 ? "+" : ""}${driftMs} ms de inicio a fin)` : "";
+    tempoInfo += (a.ref_fps && a.src_fps)
+      ? `<div class="small warn">FPS referencia: ${a.ref_fps} · FPS esta pista: ${a.src_fps}</div>`
+      : `<div class="small warn">mismos FPS${vf ? ` (${vf})` : ""} · deriva gradual de reloj${driftTxt}</div>`;
+    const semi = a.pitch_semitones ?? 0, semiTxt = (semi > 0 ? "+" : "") + semi.toFixed(2);
+    tempoInfo += a.pitch_shift
+      ? `<div class="small warn">tono alterado (${semiTxt} semitonos) → ajustar tono</div>`
+      : (Math.abs(semi) < 0.05
+          ? `<div class="small mut">cambio mínimo (${semiTxt} semitonos) → mantener tono</div>`
+          : `<div class="small mut">tono correcto → mantener tono</div>`);
+  }
   const opts = [["none", "no tocar"], ["delay", "retraso fijo"]]
-    .concat(a.segments.length ? [["segments", "por tramos (recodifica)"]] : [])
-    .concat(a.status === "tempo" ? [["tempo", "velocidad (recodifica)"]] : []);
+    .concat(extraDur || p.mode === "trim" ? [["trim", "recortar al ref"]] : [])
+    .concat(a.segments.length ? [["segments", "por tramos"]] : [])
+    .concat(a.status === "tempo" ? [["tempo", "velocidad"]] : []);
+  const codecOpts = [["auto", "por frames (sin recodificar)"], ["flac", "PCM 32-bit → FLAC"]]
+    .concat(p.codec === "aac" ? [["aac", "AAC (recodifica)"]] : []);
+  const curCodec = p.codec || (p.mode === "segments" ? "auto" : "flac");
+  const pitchCorr = p.pitch_correct != null ? !!p.pitch_correct : !!a.pitch_shift;
   return `<tr><td>a:${a.n} ${esc(a.lang)} <span class="mut">${esc(a.name)}</span></td><td>${badge(a.status)}</td>
-    <td class="num">${ms(a.delay_ms)}${a.status === "tempo" ? ` · x${a.tempo}` : ""}${seg}<div class="small mut">${(a.dense || a.points).length} mediciones</div>${a.reason ? `<div class="small err">${esc(a.reason)}</div>` : ""}</td>
+    <td class="num">${ms(a.delay_ms)}${a.status === "tempo" ? ` · x${a.tempo}` : ""}${tempoInfo}${seg}${durHint}<div class="small mut">${(a.dense || a.points).length} mediciones</div>${a.reason ? `<div class="small err">${esc(a.reason)}</div>` : ""}</td>
     <td><div class="row"><select data-a="${a.n}" data-k="mode">${opts.map(([v, t]) => `<option value="${v}" ${p.mode === v ? "selected" : ""}>${t}</option>`).join("")}</select>
       ${p.mode === "delay" || p.mode === "tempo" ? `<input type="number" step="1" data-a="${a.n}" data-k="delay_ms" value="${p.delay_ms ?? 0}"> ms` : ""}
-      ${p.mode === "segments" || p.mode === "tempo" ? `<select data-a="${a.n}" data-k="codec"><option value="aac" ${p.codec !== "flac" ? "selected" : ""}>AAC</option><option value="flac" ${p.codec === "flac" ? "selected" : ""}>FLAC</option></select>` : ""}</div></td>
+      ${p.mode === "segments" ? `<select data-a="${a.n}" data-k="codec" title="Intenta duplicar/dropear frames sin recodificar; si no es posible pasa a PCM 32-bit → FLAC máx.">${codecOpts.map(([v, t]) => `<option value="${v}" ${curCodec === v ? "selected" : ""}>${t}</option>`).join("")}</select>` : ""}
+      ${p.mode === "tempo" ? `<select data-a="${a.n}" data-k="pitch_correct" title="Si el audio se aceleró sin compensar tono (ej. PAL 25 fps), corregir tono restaura las voces y música originales"><option value="false" ${!pitchCorr ? "selected" : ""}>mantener tono (solo velocidad)</option><option value="true" ${pitchCorr ? "selected" : ""}>corregir tono y velocidad</option></select><span class="small mut" title="Cambiar la velocidad exige recodificar: se procesa en PCM 32-bit flotante y se guarda en FLAC compresión máxima">PCM 32-bit → FLAC</span>` : ""}</div></td>
     <td><div class="row"><button data-clip="${a.n}" data-v="orig">▶ original</button><button data-clip="${a.n}" data-v="sim">▶ simulado</button></div></td></tr>`;
 }
 
 function subRow(s) {
   const p = S.plan.subs[s.n] || {};
+  const unmeas = s.conf < 0.35 || s.offset_ms == null;
+  let measured = unmeas
+    ? `<span class="small mut">sin voz medible (corr. ${s.conf})</span>`
+    : `${ms(s.offset_ms)} <span class="small mut">corr. ${s.conf}</span>`;
+  if (s.twin_segments && s.twin_segments.length) {
+    measured += `<div class="small warn">heredado de audio ${esc(s.lang)}: cortes (${s.twin_segments.length} tramos)</div>`;
+  } else if (s.twin_tempo != null && Math.abs(s.twin_tempo - 1) > 1e-6) {
+    measured += `<div class="small warn">heredado de audio ${esc(s.lang)}: velocidad x${s.twin_tempo}</div>`;
+  } else if (s.twin_delay_ms != null) {
+    measured += `<div class="small warn">heredado de audio ${esc(s.lang)}: ${ms(s.twin_delay_ms)}</div>`;
+  }
+  const hasSegs = !!(s.twin_segments && s.twin_segments.length);
+  const usingSegs = !!(p.segments && p.segments.length);
+  const usingTempo = !!(p.tempo != null && Math.abs(p.tempo - 1) > 1e-6);
+  let ctrl;
+  if (hasSegs || usingSegs) {
+    ctrl = `<select data-smode="${s.n}"><option value="segs" ${usingSegs ? "selected" : ""}>según tramos de audio (${(p.segments || s.twin_segments).length})</option><option value="manual" ${!usingSegs ? "selected" : ""}>manual (ms)</option></select>` +
+      (!usingSegs ? ` <input type="number" step="1" data-s="${s.n}" value="${p.delay_ms ?? 0}"> ms` : "");
+  } else if (usingTempo) {
+    ctrl = `<input type="number" step="1" data-s="${s.n}" value="${p.delay_ms ?? 0}"> ms <span class="small mut">· x${p.tempo}</span>`;
+  } else {
+    ctrl = `<input type="number" step="1" data-s="${s.n}" value="${p.delay_ms ?? 0}"> ms`;
+  }
   return `<tr><td>s:${s.n} ${esc(s.lang)} <span class="mut">${esc(s.name)}</span></td><td>${badge(s.status)}</td>
-    <td class="num">${ms(s.offset_ms)} <span class="small mut">corr. ${s.conf}</span></td>
-    <td><input type="number" step="10" data-s="${s.n}" value="${p.delay_ms ?? 0}"> ms</td></tr>`;
+    <td class="num">${measured}</td>
+    <td><div class="row">${ctrl}</div></td></tr>`;
 }
 
 function verifyTable(v) {
-  return `<table><tr><th>Pista</th><th>Estado</th><th>Medido en el archivo guardado</th></tr>` +
-    v.audio.map(a => `<tr><td>a:${a.n} ${esc(a.lang)}</td><td>${badge(a.status)}</td><td class="num">${a.status === "ref" ? "—" : ms(a.delay_ms)}</td></tr>`).join("") +
-    v.subs.map(s => `<tr><td>s:${s.n} ${esc(s.lang)} <span class="mut">${esc(s.name)}</span></td><td>${badge(s.status)}</td><td class="num">${ms(s.offset_ms)}</td></tr>`).join("") + `</table>`;
+  return `<table><tr><th>Pista</th><th>Estado</th><th>Medido en el archivo guardado</th><th>Duración</th></tr>` +
+    v.audio.map(a => `<tr><td>a:${a.n} ${esc(a.lang)}</td><td>${badge(a.status)}</td><td class="num">${a.status === "ref" ? "—" : ms(a.delay_ms)}</td><td class="num">${a.duration_s != null ? fmt(a.duration_s, 1) : "—"}</td></tr>`).join("") +
+    v.subs.map(s => {
+      const m = (s.status === "unknown" || s.conf < 0.35 || s.offset_ms == null)
+        ? `<span class="small mut">sin voz medible (corr. ${s.conf})</span>`
+        : ms(s.offset_ms);
+      return `<tr><td>s:${s.n} ${esc(s.lang)} <span class="mut">${esc(s.name)}</span></td><td>${badge(s.status)}</td><td class="num">${m}</td><td class="num">—</td></tr>`;
+    }).join("") + `</table>`;
 }
 
 const planEmpty = () => !Object.values(S.plan.audio).some(p => p.mode && p.mode !== "none" && !(p.mode === "delay" && !+p.delay_ms)) &&
-                        !Object.values(S.plan.subs).some(p => +p.delay_ms);
+                        !Object.values(S.plan.subs).some(p => +p.delay_ms || (p.segments && p.segments.length) || (p.tempo != null && Math.abs(p.tempo - 1) > 1e-6));
 
 function renderMain() {
   const r = S.data.report, sv = S.data.saved, empty = planEmpty();
@@ -235,13 +331,26 @@ function bind() {
     if (el.dataset.k === "mode") {
       p.mode = el.value;
       if (p.mode === "delay" && p.delay_ms == null) p.delay_ms = a.delay_ms || 0;
-      if (p.mode === "segments") { p.segments = a.segments; p.codec = p.codec || "aac"; }
-      if (p.mode === "tempo") { p.tempo = a.tempo; p.delay_ms = a.delay_ms || 0; p.codec = p.codec || "aac"; }
-    } else p[el.dataset.k] = el.dataset.k === "delay_ms" ? +el.value : el.value;
+      if (p.mode === "segments") { p.segments = a.segments; p.codec = p.codec || "auto"; }
+      if (p.mode === "tempo") { p.tempo = a.tempo; p.delay_ms = a.delay_ms || 0; if (p.pitch_correct == null) p.pitch_correct = !!a.pitch_shift; p.codec = p.codec || "flac"; }
+    } else if (el.dataset.k === "pitch_correct") p.pitch_correct = el.value === "true";
+    else p[el.dataset.k] = el.dataset.k === "delay_ms" ? +el.value : el.value;
     if (S.view === "orig") S.view = "sim";
     renderMain();
   });
-  document.querySelectorAll("[data-s]").forEach(el => el.onchange = () => { S.plan.subs[el.dataset.s] = { delay_ms: +el.value }; if (S.view === "orig") S.view = "sim"; renderMain(); });
+  document.querySelectorAll("[data-smode]").forEach(el => el.onchange = () => {
+    const n = el.dataset.smode, sub = S.data.report.subs.find(t => t.n == n);
+    if (el.value === "segs" && sub && sub.twin_segments) S.plan.subs[n] = { segments: sub.twin_segments };
+    else S.plan.subs[n] = { delay_ms: 0 };
+    if (S.view === "orig") S.view = "sim";
+    renderMain();
+  });
+  document.querySelectorAll("[data-s]").forEach(el => el.onchange = () => {
+    const cur = S.plan.subs[el.dataset.s] || {};
+    S.plan.subs[el.dataset.s] = cur.tempo ? { delay_ms: +el.value, tempo: cur.tempo } : { delay_ms: +el.value };
+    if (S.view === "orig") S.view = "sim";
+    renderMain();
+  });
   document.querySelectorAll("[data-view]").forEach(el => el.onclick = () => { S.view = el.dataset.view; renderMain(); });
   document.querySelectorAll("[data-clip]").forEach(el => el.onclick = () => {
     tlPause();
@@ -542,8 +651,43 @@ document.addEventListener("keydown", e => {
 });
 addEventListener("resize", () => { if (ready()) { clampView(); draw(); } });
 
-$("#files").onclick = e => { const el = e.target.closest(".file"); if (el) loadFile(el.dataset.p); };
-$("#btnAll").onclick = () => api("/api/analyze", { files: S.files.map(f => f.path) }).then(poll);
+$("#files").onclick = e => {
+  const ba = e.target.closest("[data-fanalyze]");
+  if (ba) {
+    e.stopPropagation();
+    const fld = ba.dataset.fanalyze;
+    const files = S.files.filter(f => (f.folder ?? "") === fld).map(f => f.path);
+    api("/api/analyze", { files, force: true }).then(poll);
+    return;
+  }
+  const bp = e.target.closest("[data-fproc]");
+  if (bp) {
+    e.stopPropagation();
+    const fld = bp.dataset.fproc;
+    const list = S.files.filter(f => (f.folder ?? "") === fld);
+    const actionable = list.filter(f => !f.status || f.status !== "ok");
+    const force = actionable.length > 0 && actionable.every(f => f.saved);
+    api("/api/process", { folder: fld, force }).then(poll);
+    return;
+  }
+  const fh = e.target.closest("[data-ftog]");
+  if (fh) {
+    const fld = fh.dataset.ftog;
+    if (S.collapsed.has(fld)) S.collapsed.delete(fld);
+    else S.collapsed.add(fld);
+    renderFiles();
+    return;
+  }
+  const el = e.target.closest(".file");
+  if (el) loadFile(el.dataset.p);
+};
+$("#btnAll").onclick = () => S.files.length && api("/api/analyze", { files: S.files.map(f => f.path), force: true }).then(poll);
+$("#btnProcAll").onclick = () => {
+  if (!S.files.length) return;
+  const actionable = S.files.filter(f => !f.status || f.status !== "ok");
+  const force = actionable.length > 0 && actionable.every(f => f.saved);
+  api("/api/process", { force }).then(poll);
+};
 $("#btnRe").onclick = () => S.cur && api("/api/analyze", { files: [S.cur], force: true }).then(poll);
 poll(); setInterval(poll, 1500);
 </script>

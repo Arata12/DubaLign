@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Crea el venv local si falta y ejecuta sync.py con él.
+# Ejecuta dubalign-sync dentro del contenedor Docker sin dependencias locales.
 set -euo pipefail
 cd "$(dirname "$0")"
-if [ ! -x .venv/bin/python ]; then
-    python3 -m venv .venv
-    .venv/bin/pip install -q -r requirements.txt
-fi
-exec .venv/bin/python sync.py "$@"
+mkdir -p output work
+exec docker compose run --rm -T --no-deps --entrypoint dubalign-sync \
+  -v "$PWD:/host:ro" -v "$PWD/output:/host/output" -v "$PWD/work:/host/work" \
+  -w /host web "$@"
